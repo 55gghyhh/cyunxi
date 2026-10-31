@@ -186,13 +186,37 @@ static UIButton *KLReferenceButton(UIView *card) {
     return KLFindWideButton(card, 0);
 }
 
+// 判断参考按钮的配色是否"几乎不可见"（透明底 + 白字，落在白色背景上会看不见）
+static BOOL KLRefStyleIsInvisible(UIButton *ref) {
+    if (ref == nil) {
+        return YES;
+    }
+    UIColor *bg = ref.backgroundColor;
+    if (bg == nil) {
+        return YES;
+    }
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (![bg getRed:&r green:&g blue:&b alpha:&a]) {
+        return YES;
+    }
+    if (a < 0.25) {
+        return YES;   // 底色太透明
+    }
+    if (r > 0.95 && g > 0.95 && b > 0.95 && a < 0.6) {
+        return YES;   // 近白且半透明
+    }
+    return NO;
+}
+
 static UIButton *KLMakeButton(NSString *title, UIButton *ref, CGRect frame) {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     b.frame = frame;
     [b setTitle:title forState:UIControlStateNormal];
-    if (ref) {
+
+    BOOL invisible = KLRefStyleIsInvisible(ref);
+    if (ref && !invisible) {
         UIColor *bg = ref.backgroundColor;
-        b.backgroundColor = bg ?: [UIColor colorWithWhite:1.0 alpha:0.14];
+        b.backgroundColor = bg;
         UIColor *fg = [ref titleColorForState:UIControlStateNormal];
         [b setTitleColor:(fg ?: [UIColor whiteColor]) forState:UIControlStateNormal];
         UIFont *f = ref.titleLabel.font;
@@ -202,11 +226,14 @@ static UIButton *KLMakeButton(NSString *title, UIButton *ref, CGRect frame) {
         b.layer.borderWidth = ref.layer.borderWidth;
         b.layer.borderColor = ref.layer.borderColor;
     } else {
-        b.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.14];
+        // 保底样式：深色底 + 白字 + 描边，任何背景上都看得见
+        b.backgroundColor = [UIColor colorWithRed:0.10 green:0.11 blue:0.13 alpha:0.92];
         [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        b.titleLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightMedium];
+        b.titleLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
         b.layer.cornerRadius = 8.0;
         b.clipsToBounds = YES;
+        b.layer.borderWidth = 1.0;
+        b.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.55].CGColor;
     }
     return b;
 }
@@ -322,9 +349,15 @@ static void KLInstallRow(UIView *card) {
 
     objc_setAssociatedObject(card, kKLRowKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    KLLogC(@"UI", @"面板已注入「运行日志 / 导出日志」 方式=%@ card=%@ %.0fx%.0f 按钮 %.0fx%.0f ref=%@",
+    KLLogC(@"UI", @"面板已注入「运行日志 / 导出日志」 方式=%@ card=%@ %.0fx%.0f 按钮 %.0fx%.0f ref=%@ 参考样式%@",
            mode, NSStringFromClass([card class]), width, baseH, btnW, btnH,
-           ref ? NSStringFromClass([ref class]) : @"none");
+           ref ? NSStringFromClass([ref class]) : @"none",
+           KLRefStyleIsInvisible(ref) ? @"不可见→用保底深色" : @"可用");
+    CGRect hostRect = [container.superview convertRect:container.frame toView:nil];
+    KLLogC(@"UI", @"按钮条落点: 父视图=%@ 相对窗口=(%.0f,%.0f,%.0f,%.0f)",
+           NSStringFromClass([container.superview class]),
+           hostRect.origin.x, hostRect.origin.y,
+           hostRect.size.width, hostRect.size.height);
 }
 static UIWindow *KLKeyWindow(void);
 
