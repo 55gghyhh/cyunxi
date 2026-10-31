@@ -39,6 +39,9 @@ void KLEnsurePanelButtons(void);
 /* 主动调用 ioskuka 的 0xF408 把面板/悬浮球建出来（该函数在本包里是死代码）*/
 void KLRevivePanel(void);
 
+/* 打印 ioskuka 的 hook 是否真的装上了（IMP 是否落在它镜像内）*/
+void KLDumpHookState(void);
+
 /* 启动探针：在 key window 上弹一个 8 秒自动消失的框。
    它只证明一件事——这个 dylib 真的被 dyld 加载、且主线程 UI 可用。
    拿它当判据，比看 Console 可靠（用户不一定有 Mac）。*/

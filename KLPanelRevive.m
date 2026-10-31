@@ -20,6 +20,10 @@
 
 static const uintptr_t kKLBuildFabOffset  = 0xF408;
 static const uintptr_t kKLToggleFabOffset = 0xD508;
+// 0x10124 = 构造函数里那段 hook 安装代码。dyld 加载时它已经跑过一次，
+// 但那时 Swift 类还没在 ObjC runtime 里 realized，objc_getClass 全返回 nil。
+// UI 起来之后再调一次，类名就能命中。
+static const uintptr_t kKLHookInstallOffset = 0x10124;
 static const CGFloat   kKLMinOverlayLevel = 50.0;
 
 static uintptr_t KLIoskukaBase(void) {
@@ -172,10 +176,14 @@ void KLRevivePanel(void) {
         KLLogC(@"REV", @"没找到 ioskuka 镜像，跳过面板复活");
         return;
     }
-    KLLogC(@"REV", @"ioskuka base=0x%lx  建球=0x%lx  建面板=0x%lx",
+    KLLogC(@"REV", @"ioskuka base=0x%lx  装hook=0x%lx  建球=0x%lx  建面板=0x%lx",
            (unsigned long)base,
+           (unsigned long)(base + kKLHookInstallOffset),
            (unsigned long)(base + kKLBuildFabOffset),
            (unsigned long)(base + kKLToggleFabOffset));
+
+    // 先重装 hook（此时 Swift 类已 realized），再建 UI
+    KLCallVoid(base + kKLHookInstallOffset, @"0x10124 重装 hook");
 
     KLCallVoid(base + kKLBuildFabOffset, @"0xF408 建球");
     KLCallVoid(base + kKLToggleFabOffset, @"0xD508 建面板");
@@ -183,6 +191,7 @@ void KLRevivePanel(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         KLDumpAndFixOverlays(@"T+0.8s");
+        KLDumpHookState();
         KLEnsurePanelButtons();
     });
 
@@ -192,4 +201,64 @@ void KLRevivePanel(void) {
         KLDumpAndFixOverlays(@"T+2.5s");
         KLEnsurePanelButtons();
     });
+}
+
+// ---------------------------------------------------------------
+// hook 状态探针（决定性证据，不靠日志字符串猜）
+// ioskuka 的 0x10124 构造函数的 hook 目标全是系统类。装成功的话，
+// 那些方法的 IMP 会落在 ioskuka 镜像的地址区间 [base, base+0x80000)。
+// ---------------------------------------------------------------
+static BOOL KLImpInsideImage(IMP imp, uintptr_t base, uintptr_t size) {
+    uintptr_t p = (uintptr_t)imp;
+    return (p >= base && p < base + size);
+}
+
+void KLDumpHookState(void) {
+    uintptr_t base = KLIoskukaBase();
+    if (base == 0) {
+        KLLogC(@"HOOK", @"ioskuka 未加载，无法探测");
+        return;
+    }
+    const uintptr_t size = 0x80000;   // __TEXT 0x78000 + __DATA_CONST 0x4000 + __DATA 0x4000
+
+    // a) 三个类名候选到底能不能拿到
+    NSString *cands[] = {
+        @"XCameraCommonBiz.XHLocationManager",
+        @"XCameraPro.XHLocationManager",
+        @"XHLocationManager",
+        @"XCameraMixture.XHWatermarkView",
+        @"XCameraPro.XHWatermarkView",
+        @"XHWatermarkView",
+        @"XHCameraKit", @"XHMultiCameraKit",
+    };
+    for (int i = 0; i < 8; i++) {
+        Class c1 = objc_getClass([cands[i] UTF8String]);
+        Class c2 = NSClassFromString(cands[i]);
+        KLLogC(@"HOOK", @"类 %@ → objc_getClass=%@  NSClassFromString=%@",
+               cands[i], c1 ? NSStringFromClass(c1) : @"nil",
+               c2 ? NSStringFromClass(c2) : @"nil");
+    }
+
+    // b) 系统类的方法 IMP 有没有被搬进 ioskuka
+    NSString *clsNames[] = {@"CLLocationManager", @"CLLocation", @"NSDateFormatter",
+                            @"UILabel", @"UIImageView", @"UITextView"};
+    NSString *sels[] = {@"startUpdatingLocation", @"coordinate", @"stringFromDate:",
+                        @"setText:", @"setImage:", @"setText:"};
+    for (int i = 0; i < 6; i++) {
+        Class c = objc_getClass([clsNames[i] UTF8String]);
+        if (c == Nil) {
+            KLLogC(@"HOOK", @"%@ 类不存在", clsNames[i]);
+            continue;
+        }
+        SEL sel = NSSelectorFromString(sels[i]);
+        Method m = class_getInstanceMethod(c, sel);
+        if (m == NULL) {
+            KLLogC(@"HOOK", @"%@ 无方法 %@", clsNames[i], sels[i]);
+            continue;
+        }
+        IMP imp = method_getImplementation(m);
+        KLLogC(@"HOOK", @"%@ -%@ IMP=%p %@", clsNames[i], sels[i], imp,
+               KLImpInsideImage(imp, base, size) ? @"✅ 已被 ioskuka 接管"
+                                                 : @"❌ 仍是系统原实现");
+    }
 }

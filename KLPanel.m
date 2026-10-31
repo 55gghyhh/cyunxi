@@ -242,30 +242,23 @@ static void KLInstallRow(UIView *card) {
     if (gTarget == nil) {
         gTarget = [[KLActionTarget alloc] init];
     }
-    UIWindow *win = card.window ?: KLKeyWindow();
+    if (card == nil) {
+        return;
+    }
 
     UIView *bar = objc_getAssociatedObject(card, kKLRowKey);
-    if (bar != nil) {
-        // 已经装过：只做“跟随”，卡片被挪动/改尺寸时把按钮条摆回去
-        if (bar.superview == nil) {
+    if (bar != nil && bar.superview != nil) {
+        // 已装过：跟随卡片位置（不含改卡片尺寸）
+        UIView *host = bar.superview;
+        if (host == card) {
             return;
         }
-        CGFloat inset = MAX(8.0, bar.tag / 10.0);
-        if (bar.superview == card) {
-            CGFloat need = CGRectGetMaxY(bar.frame) + 10.0;
-            if (card.bounds.size.height + 0.5 < need) {
-                CGRect f = card.frame;
-                f.size.height = need;
-                card.frame = f;
-            }
-        } else {
-            CGRect cf = [card convertRect:card.bounds toView:bar.superview];
-            CGRect f = bar.frame;
-            f.origin.x = CGRectGetMinX(cf) + inset;
-            f.origin.y = CGRectGetMaxY(cf) + 8.0;
-            f.size.width = MAX(120.0, CGRectGetWidth(cf) - inset * 2.0);
-            bar.frame = f;
-        }
+        CGRect cf = [card convertRect:card.bounds toView:host];
+        CGRect f = bar.frame;
+        f.origin.x = CGRectGetMinX(cf) + 14.0;
+        f.origin.y = CGRectGetMaxY(cf) + 6.0;
+        f.size.width = MAX(120.0, CGRectGetWidth(cf) - 28.0);
+        bar.frame = f;
         return;
     }
 
@@ -279,21 +272,18 @@ static void KLInstallRow(UIView *card) {
 
     CGFloat inset = 14.0;
     CGFloat btnH = 34.0;
-    CGRect refRect = CGRectMake(inset, 0.0, width - inset * 2.0, btnH);
     if (ref != nil) {
+        CGRect refRect = ref.frame;
         if (ref.superview != nil) {
             refRect = [ref.superview convertRect:ref.frame toView:card];
-        } else {
-            refRect = ref.frame;
         }
         inset = MAX(refRect.origin.x, 10.0);
         // convertRect 在深层/带变换的层级里可能算出极大值，必须夹紧，
         // 否则 usable 变负 → 静默 return（上一版 370x470 的真面板就是这么被跳过的）
         inset = MIN(inset, width * 0.15);
-        btnH = refRect.size.height;
-    }
-    if (btnH < 22.0 || btnH > 80.0) {
-        btnH = 34.0;
+        if (refRect.size.height >= 22.0 && refRect.size.height <= 80.0) {
+            btnH = refRect.size.height;
+        }
     }
     CGFloat usable = width - inset * 2.0;
     if (usable < 100.0) {
@@ -304,46 +294,39 @@ static void KLInstallRow(UIView *card) {
     CGFloat gap = 10.0;
     CGFloat btnW = (usable - gap) / 2.0;
 
-    // 放哪儿：优先加进卡片底部（视觉上属于面板），
-    // 但卡片长高后如果会顶出屏幕，就改成贴在卡片下方的兄弟视图——绝不覆盖/改动面板原有内容。
-    CGRect cardInWin = card.bounds;
-    if (win != nil) {
-        cardInWin = [card convertRect:card.bounds toView:win];
+    // 关键：绝不修改 card.frame。
+    // 这张卡片用的是 Auto Layout，改高度会把底部内容（开关状态文本）挤出可视区。
+    // 按钮条一律放到 card 的父视图里、紧贴卡片底边下方；下方放不下就改放到上方。
+    UIView *host = card.superview ?: card.window;
+    if (host == nil) {
+        return;
     }
-    CGFloat safeBottom = 0.0;
-    if (@available(iOS 11.0, *)) {
-        safeBottom = win.safeAreaInsets.bottom;
-    }
-    CGFloat limitY = (win != nil ? win.bounds.size.height : CGRectGetMaxY(cardInWin)) - safeBottom - 8.0;
-    BOOL inside = (CGRectGetMaxY(cardInWin) + btnH + 14.0) <= limitY;
+    CGRect cf = [card convertRect:card.bounds toView:host];
+    CGFloat yBelow = CGRectGetMaxY(cf) + 6.0;
 
-    UIView *container = nil;
-    NSString *mode = nil;
-    if (inside) {
-        container = [[UIView alloc] initWithFrame:CGRectMake(inset, baseH + 6.0, usable, btnH)];
-        container.backgroundColor = [UIColor clearColor];
-        [card addSubview:container];
-        CGRect cf = card.frame;
-        cf.size.height = baseH + btnH + 14.0;
-        card.frame = cf;
-        mode = @"卡片内";
-    } else {
-        UIView *host = card.superview ?: win;
-        if (host == nil) {
-            return;
+    CGFloat screenH = host.bounds.size.height;
+    UIView *barParent = host;
+    if (yBelow + btnH > screenH - 8.0) {
+        // 下方不够 → 放卡片上方
+        CGFloat yAbove = CGRectGetMinY(cf) - btnH - 6.0;
+        if (yAbove < 8.0) {
+            // 上下都不够，退回放卡片内底部（仍不改 frame，靠 layer 绘制）
+            barParent = card;
+            yBelow = baseH - btnH - 8.0;
+        } else {
+            yBelow = yAbove;
         }
-        CGRect cf = [card convertRect:card.bounds toView:host];
-        container = [[UIView alloc] initWithFrame:CGRectMake(CGRectGetMinX(cf) + inset,
-                                                             CGRectGetMaxY(cf) + 8.0,
-                                                             usable,
-                                                             btnH)];
-        container.backgroundColor = [UIColor clearColor];
-        [host addSubview:container];
-        [host bringSubviewToFront:container];
-        mode = @"卡片下方（窗口空间不足，避免压住原面板）";
     }
-    container.tag = (NSInteger)(inset * 10.0);
-    container.autoresizingMask = UIViewAutoresizingNone;
+
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(CGRectGetMinX(cf) + inset,
+                                                                 yBelow,
+                                                                 usable,
+                                                                 btnH)];
+    container.backgroundColor = [UIColor clearColor];
+    [barParent addSubview:container];
+    if (barParent != card) {
+        [barParent bringSubviewToFront:container];
+    }
 
     UIButton *bLog = KLMakeButton(@"运行日志", ref, CGRectMake(0.0, 0.0, btnW, btnH));
     [bLog addTarget:gTarget action:@selector(onViewLog:) forControlEvents:UIControlEventTouchUpInside];
@@ -355,16 +338,14 @@ static void KLInstallRow(UIView *card) {
 
     objc_setAssociatedObject(card, kKLRowKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    KLLogC(@"UI", @"面板已注入「运行日志 / 导出日志」 方式=%@ card=%@ %.0fx%.0f 按钮 %.0fx%.0f ref=%@ 参考样式%@",
-           mode, NSStringFromClass([card class]), width, baseH, btnW, btnH,
-           ref ? NSStringFromClass([ref class]) : @"none",
-           KLRefStyleIsInvisible(ref) ? @"不可见→用保底深色" : @"可用");
     CGRect hostRect = [container.superview convertRect:container.frame toView:nil];
-    KLLogC(@"UI", @"按钮条落点: 父视图=%@ 相对窗口=(%.0f,%.0f,%.0f,%.0f)",
+    KLLogC(@"UI", @"面板已注入「运行日志 / 导出日志」 card=%@ %.0fx%.0f 按钮 %.0fx%.0f 参考样式%@ 父视图=%@ 窗口坐标=(%.0f,%.0f,%.0f,%.0f)",
+           NSStringFromClass([card class]), width, baseH, btnW, btnH,
+           KLRefStyleIsInvisible(ref) ? @"不可见→用保底深色" : @"可用",
            NSStringFromClass([container.superview class]),
-           hostRect.origin.x, hostRect.origin.y,
-           hostRect.size.width, hostRect.size.height);
+           hostRect.origin.x, hostRect.origin.y, hostRect.size.width, hostRect.size.height);
 }
+
 static UIWindow *KLKeyWindow(void);
 
 void KLBootProbe(NSString *extra) {
@@ -537,6 +518,7 @@ static void KLInstallFallbackFab(void) {
 // 保活：ioskuka 关闭面板时会把整个浮层窗口 hid=1，球也跟着不见。
 // 每 0.5s 检查一次，被隐藏就恢复 —— 关闭面板后窗口里只剩球，正是想要的状态。
 static BOOL gOverlayWasHidden = NO;
+static BOOL gReportedNoFab = NO;
 
 static void KLKeepOverlayAlive(void) {
     NSArray<UIWindow *> *wins = KLOverylayWindows();
@@ -635,7 +617,12 @@ void KLEnsurePanelButtons(void) {
                 KLLogC(@"ERR", @"启动 %ld 次仍未找到 KAlert 面板，按钮未注入（锚点文案不匹配？）",
                        (long)gAttempts);
             }
-            KLInstallFallbackFab();
+            // 需求变更：不要悬浮日志球，只在面板里提供入口。
+            // 找不到面板时什么都不放（面板本身由 KLRevivePanel 负责拉起来）。
+            if (!gReportedNoFab) {
+                gReportedNoFab = YES;
+                KLLogC(@"UI", @"未把按钮挂到面板上（不创建悬浮球，按需求只保留面板入口）");
+            }
         }
         return;
     }
