@@ -142,6 +142,20 @@ static void KLDumpAndFixOverlays(NSString *tag) {
                 continue;   // ← 绝不碰 App 自己的窗口
             }
             overlays += 1;
+
+            // 关键：ioskuka 的浮层窗口默认 hid=1。窗口隐藏时，里面再可见的
+            // 球和面板都画不出来（实测 XCPassWindow lv=2100 hid=1，球 hid=0 但看不见）。
+            if (w.isHidden) {
+                [w setHidden:NO];
+                fixed += 1;
+                KLLogC(@"REV", @"%@ 浮层窗口 hid=1 → 设为可见", tag);
+            }
+            if (w.alpha < 0.99) {
+                w.alpha = 1.0;
+                fixed += 1;
+                KLLogC(@"REV", @"%@ 浮层窗口 alpha=%.2f → 1.0", tag, w.alpha);
+            }
+
             fabs_ += KLScanFabIn(w, 0);
             if (KLFixFabIn(w, w.bounds, 0)) {
                 fixed += 1;
@@ -169,6 +183,13 @@ void KLRevivePanel(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         KLDumpAndFixOverlays(@"T+0.8s");
+        KLEnsurePanelButtons();
+    });
+
+    // 第二遍：modal 呈现动画可能还没结束，1.7 秒后再确认/补一次
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        KLDumpAndFixOverlays(@"T+2.5s");
         KLEnsurePanelButtons();
     });
 }
