@@ -389,22 +389,56 @@ void KLBootProbe(NSString *extra) {
 static UIButton *gFab = nil;
 static const void *kKLFabPanKey = &kKLFabPanKey;
 
+// 浮层窗口 = ioskuka 的 XCPassWindow（windowLevel 2100）
+static NSArray<UIWindow *> *KLOverylayWindows(void) {
+    NSMutableArray *out = [NSMutableArray array];
+    UIApplication *app = [UIApplication sharedApplication];
+    for (UIScene *scene in app.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            if (w.windowLevel >= 50.0) {
+                [out addObject:w];
+            }
+        }
+    }
+    return out;
+}
+
+// 优先 App 自己的窗口（level 0）。日志球必须挂在这里，
+// 否则挂到浮层窗口上，面板一关窗口隐藏，球也没了。
 static UIWindow *KLKeyWindow(void) {
     UIApplication *app = [UIApplication sharedApplication];
+    UIWindow *appWin = nil;
+    UIWindow *anyKey = nil;
     UIWindow *fallback = nil;
     for (UIScene *scene in app.connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) {
             continue;
         }
-        UIWindowScene *ws = (UIWindowScene *)scene;
-        for (UIWindow *w in ws.windows) {
-            if (w.isKeyWindow) {
-                return w;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            if (w.windowLevel < 1.0 && w.rootViewController != nil) {
+                if (appWin == nil) {
+                    appWin = w;
+                }
+                if (w.isKeyWindow) {
+                    return w;
+                }
+            }
+            if (w.isKeyWindow && anyKey == nil) {
+                anyKey = w;
             }
             if (fallback == nil && w.rootViewController != nil) {
                 fallback = w;
             }
         }
+    }
+    if (appWin != nil) {
+        return appWin;
+    }
+    if (anyKey != nil) {
+        return anyKey;
     }
     return fallback;
 }
@@ -477,18 +511,91 @@ static void KLInstallFallbackFab(void) {
     KLLogC(@"UI", @"未找到 KAlert 面板，已改用悬浮球入口（可拖动）");
 }
 
+// 保活：ioskuka 关闭面板时会把整个浮层窗口 hid=1，球也跟着不见。
+// 每 0.5s 检查一次，被隐藏就恢复 —— 关闭面板后窗口里只剩球，正是想要的状态。
+static void KLKeepOverlayAlive(void) {
+    for (UIWindow *w in KLOverylayWindows()) {
+        if (w.isHidden) {
+            [w setHidden:NO];
+            KLLogC(@"UI", @"浮层窗口被隐藏，已恢复（球应重新可见）");
+        }
+        if (w.alpha < 0.99) {
+            w.alpha = 1.0;
+        }
+    }
+}
+
+// 按结构认面板：浮层窗口里 modal 呈现的那个 VC 的最大子视图就是卡片。
+// 不依赖文字锚点 —— 这个包的面板行是自绘控件，文本匹配不可靠。
+static UIView *KLPanelFromOverlay(void) {
+    for (UIWindow *w in KLOverylayWindows()) {
+        if (w.isHidden) {
+            continue;
+        }
+        UIViewController *vc = w.rootViewController;
+        int guard = 0;
+        while (vc.presentedViewController != nil && guard < 4) {
+            vc = vc.presentedViewController;
+            guard += 1;
+        }
+        if (vc == nil || vc.view == nil) {
+            continue;
+        }
+        // 要区分「遮罩层」和「卡片」：
+        //   遮罩 ≈ 整个屏幕（面积比接近 1），卡片 ≈ 屏宽 60~85%、高度 < 80%
+        CGRect vb = vc.view.bounds;
+        CGFloat vArea = vb.size.width * vb.size.height;
+        if (vArea < 1.0) {
+            continue;
+        }
+        UIView *best = nil;
+        CGFloat bestArea = 0;
+        for (UIView *sub in vc.view.subviews) {
+            CGRect r = sub.frame;
+            CGFloat a = r.size.width * r.size.height;
+            CGFloat ratio = a / vArea;
+            BOOL tooBig = (ratio > 0.92);                       // 遮罩/全屏容器
+            BOOL tooSmall = (a < 120.0 * 80.0);
+            if (tooBig || tooSmall) {
+                continue;
+            }
+            if (a > bestArea) {
+                bestArea = a;
+                best = sub;
+            }
+        }
+        if (best != nil) {
+            KLLogC(@"UI", @"面板卡片候选 %@ %.0fx%.0f (占屏 %.0f%%)",
+                   NSStringFromClass([best class]),
+                   best.bounds.size.width, best.bounds.size.height,
+                   (bestArea / vArea) * 100.0);
+            return best;
+        }
+        // 再退一层：VC.view 直接当卡片（尺寸合理时）
+        if (vb.size.width >= 120.0 && vb.size.height >= 80.0 && vb.size.height < vArea / vb.size.width * 0.92) {
+            return vc.view;
+        }
+    }
+    return nil;
+}
+
 void KLEnsurePanelButtons(void) {
     UIApplication *app = [UIApplication sharedApplication];
     if (app.applicationState != UIApplicationStateActive) {
         return;
     }
     gAttempts += 1;
+    KLKeepOverlayAlive();
+
     UIView *cached = gCardRef;
     if (cached != nil && cached.window != nil) {
         KLInstallRow(cached);
         return;
     }
-    UIView *card = KLFindPanelCard();
+    UIView *card = KLPanelFromOverlay();   // 先按窗口结构认
+    if (card == nil) {
+        card = KLFindPanelCard();          // 再退回文字锚点
+    }
     gCardRef = card;
     if (card == nil) {
         if (gAttempts > 12) {
