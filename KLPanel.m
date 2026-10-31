@@ -474,7 +474,7 @@ static void KLFabPan(UIPanGestureRecognizer *g) {
     }
 }
 
-static void KLInstallFallbackFab(void) {
+__attribute__((unused)) static void KLInstallFallbackFab(void) {
     if (gFab != nil && gFab.window != nil) {
         [gFab.superview bringSubviewToFront:gFab];
         return;
