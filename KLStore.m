@@ -2,6 +2,7 @@
 #import <unistd.h>
 #import <sys/time.h>
 #import <dlfcn.h>
+#import <os/log.h>
 
 static const NSUInteger kKLMaxLines = 20000;
 static const NSUInteger kKLTrimBatch = 4000;
@@ -329,12 +330,17 @@ static void KLLogTap(const char *str, unsigned int len, BOOL banner) {
         return;
     }
     NSString *s = [[NSString alloc] initWithBytes:str length:len encoding:NSUTF8StringEncoding];
-    if (s.length) {
-        NSString *trim = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (trim.length) {
-            [[KLStore shared] append:trim category:@"NSLog"];
-        }
+    if (s.length == 0) {
+        return;
     }
+    NSString *trim = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trim.length == 0) {
+        return;
+    }
+    [[KLStore shared] append:trim category:@"NSLog"];
+    // 接管 _NSSetLogCStringFunction 后系统默认输出就没哑了，手动补一条 os_log，
+    // 这样 Console.app / log stream 依然看得见 NSLog，且不会回到我们的 stderr 管道（不重复）。
+    os_log(OS_LOG_DEFAULT, "%{public}s", str);
 }
 
 void KLInstallNSLogTap(void) {

@@ -11,5 +11,6 @@ TWEAK_NAME = KAlertLog
 KAlertLog_FILES = Tweak.m KLStore.m KLNetLog.m KLViewer.m KLPanel.m
 KAlertLog_CFLAGS = -fobjc-arc -fblocks -Wall -Wno-unused-parameter -Wno-deprecated-declarations
 KAlertLog_FRAMEWORKS = UIKit Foundation QuartzCore
+KAlertLog_LDFLAGS = -lz
 
 include $(THEOS_MAKE_PATH)/tweak.mk

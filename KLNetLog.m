@@ -1,5 +1,6 @@
 #import "KAlertLog.h"
 #import <objc/runtime.h>
+#import <zlib.h>
 
 typedef NSURLSessionDataTask *(*KLDTP_Req)(id, SEL, NSURLRequest *, void (^)(NSData *, NSURLResponse *, NSError *));
 typedef NSURLSessionDataTask *(*KLDTP_URL)(id, SEL, NSURL *, void (^)(NSData *, NSURLResponse *, NSError *));
@@ -116,17 +117,63 @@ static NSString *KLHeaderDigest(NSURLRequest *req) {
     return [parts componentsJoinedByString:@", "];
 }
 
+// gzip/zlib 解压。iOS 上很多 SDK 的 body 和响应都是 gzip，
+// 直接拿字节当 UTF-8 解会得到空串或乱码，所以先解压再看。
+static NSData *KLInflate(NSData *in, NSUInteger maxOut) {
+    if (in.length < 2) {
+        return nil;
+    }
+    const uint8_t *p = in.bytes;
+    if (!(p[0] == 0x1f && p[1] == 0x8b)) {
+        return nil;
+    }
+    z_stream zs;
+    memset(&zs, 0, sizeof(zs));
+    if (inflateInit2(&zs, 15 + 32) != Z_OK) {
+        return nil;
+    }
+    NSMutableData *out = [NSMutableData dataWithCapacity:4096];
+    uint8_t buf[4096];
+    zs.next_in = (Bytef *)p;
+    zs.avail_in = (uInt)in.length;
+    int rc = Z_OK;
+    while (rc != Z_STREAM_END) {
+        zs.next_out = buf;
+        zs.avail_out = (uInt)sizeof(buf);
+        rc = inflate(&zs, Z_NO_FLUSH);
+        if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
+            break;
+        }
+        NSUInteger got = sizeof(buf) - zs.avail_out;
+        if (got > 0) {
+            [out appendBytes:buf length:got];
+        }
+        if (out.length >= maxOut || (got == 0 && rc == Z_BUF_ERROR)) {
+            break;
+        }
+    }
+    inflateEnd(&zs);
+    return out.length ? out : nil;
+}
+
 static NSString *KLPreview(NSData *data, NSString *mime) {
     if (data.length == 0) {
         return @"";
+    }
+    BOOL wasGzip = NO;
+    NSData *raw = data;
+    NSData *inflated = KLInflate(data, 16384);
+    if (inflated.length) {
+        raw = inflated;
+        wasGzip = YES;
     }
     NSString *m = mime.lowercaseString ?: @"";
     BOOL textual = ([m containsString:@"json"] || [m containsString:@"text"] ||
                     [m containsString:@"xml"] || [m containsString:@"javascript"] ||
                     [m containsString:@"x-www-form-urlencoded"]);
     if (textual) {
-        NSUInteger n = MIN(data.length, (NSUInteger)600);
-        NSData *sub = [data subdataWithRange:NSMakeRange(0, n)];
+        NSUInteger n = MIN(raw.length, (NSUInteger)600);
+        NSData *sub = [raw subdataWithRange:NSMakeRange(0, n)];
         NSString *s = [[NSString alloc] initWithData:sub encoding:NSUTF8StringEncoding];
         if (s == nil) {
             s = [[NSString alloc] initWithData:sub encoding:NSISOLatin1StringEncoding];
@@ -134,15 +181,19 @@ static NSString *KLPreview(NSData *data, NSString *mime) {
         if (s.length) {
             s = [s stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
             s = [s stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
+            if (wasGzip) {
+                s = [@"[gunzip] " stringByAppendingString:s];
+            }
             return KLClip(s, 500);
         }
-        return @"";
+        return wasGzip ? @"[gunzip] <解压后非 UTF-8>" : @"";
     }
-    NSUInteger n = MIN(data.length, (NSUInteger)16);
-    NSData *sub = [data subdataWithRange:NSMakeRange(0, n)];
-    return [NSString stringWithFormat:@"<%@ %luB hex=%@>",
+    NSUInteger n = MIN(raw.length, (NSUInteger)16);
+    NSData *sub = [raw subdataWithRange:NSMakeRange(0, n)];
+    return [NSString stringWithFormat:@"<%@ %luB%s hex=%@>",
             m.length ? m : @"bin",
             (unsigned long)data.length,
+            wasGzip ? " gzip→解压" : "",
             sub];
 }
 

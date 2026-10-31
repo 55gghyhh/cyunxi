@@ -58,16 +58,20 @@ static UIViewController *KLTopViewController(void) {
     self.view.backgroundColor = [UIColor systemBackgroundColor];
 
     self.navigationItem.leftBarButtonItem =
-        [[UIBarButtonItem alloc] initWithTitle:@"清空日志"
-                                         style:UIBarButtonItemStylePlain
-                                        target:self
-                                        action:@selector(onClear)];
-
-    self.navigationItem.rightBarButtonItem =
         [[UIBarButtonItem alloc] initWithTitle:@"完成"
                                          style:UIBarButtonItemStyleDone
                                         target:self
                                         action:@selector(onClose)];
+
+    UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithTitle:@"分享"
+                                                              style:UIBarButtonItemStylePlain
+                                                             target:self
+                                                             action:@selector(onShare)];
+    UIBarButtonItem *clear = [[UIBarButtonItem alloc] initWithTitle:@"清空"
+                                                              style:UIBarButtonItemStylePlain
+                                                             target:self
+                                                             action:@selector(onClear)];
+    self.navigationItem.rightBarButtonItems = @[ share, clear ];
 
     UITextView *tv = [[UITextView alloc] initWithFrame:CGRectZero];
     tv.editable = NO;
@@ -148,6 +152,23 @@ static UIViewController *KLTopViewController(void) {
         KLLogC(@"UI", @"日志已清空");
     }]];
     [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)onShare {
+    [self presentShareFromBarButton];
+}
+
+- (void)presentShareFromBarButton {
+    NSURL *url = [[KLStore shared] writeExportFile];
+    if (url == nil) {
+        return;
+    }
+    UIActivityViewController *av = [[UIActivityViewController alloc] initWithActivityItems:@[ url ]
+                                                                    applicationActivities:nil];
+    if (av.popoverPresentationController) {
+        av.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
+    }
+    [self presentViewController:av animated:YES completion:nil];
 }
 
 - (void)onClose {

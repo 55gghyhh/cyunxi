@@ -4,15 +4,21 @@
 
 static const void *kKLRowKey = &kKLRowKey;
 
+static UIWindow *KLKeyWindow(void);
+
 @interface KLActionTarget : NSObject
 - (void)onViewLog:(UIButton *)sender;
 - (void)onExportLog:(UIButton *)sender;
+- (void)onFabTap:(UIButton *)sender;
+- (void)onFabPan:(UIPanGestureRecognizer *)g;
 @end
 
 static KLActionTarget *gTarget = nil;
 static NSInteger gAttempts = 0;
 static BOOL gReportedMissing = NO;
 static __weak UIView *gCardRef = nil;
+
+static void KLFabPan(UIPanGestureRecognizer *g);
 
 @implementation KLActionTarget
 
@@ -25,6 +31,16 @@ static __weak UIView *gCardRef = nil;
 - (void)onExportLog:(UIButton *)sender {
     KLLogC(@"UI", @"点击「导出日志」");
     KLShareLogFromView(sender);
+}
+
+- (void)onFabPan:(UIPanGestureRecognizer *)g {
+    KLFabPan(g);
+}
+
+- (void)onFabTap:(UIButton *)sender {
+    (void)sender;
+    KLLogC(@"UI", @"点击悬浮球「日志」");
+    KLPresentLogViewer();
 }
 
 @end
@@ -199,13 +215,29 @@ static void KLInstallRow(UIView *card) {
     if (gTarget == nil) {
         gTarget = [[KLActionTarget alloc] init];
     }
-    UIView *row = objc_getAssociatedObject(card, kKLRowKey);
-    if (row != nil && row.superview == card) {
-        CGFloat need = CGRectGetMaxY(row.frame) + 10.0;
-        if (card.bounds.size.height + 0.5 < need) {
-            CGRect f = card.frame;
-            f.size.height = need;
-            card.frame = f;
+    UIWindow *win = card.window ?: KLKeyWindow();
+
+    UIView *bar = objc_getAssociatedObject(card, kKLRowKey);
+    if (bar != nil) {
+        // 已经装过：只做“跟随”，卡片被挪动/改尺寸时把按钮条摆回去
+        if (bar.superview == nil) {
+            return;
+        }
+        CGFloat inset = MAX(8.0, bar.tag / 10.0);
+        if (bar.superview == card) {
+            CGFloat need = CGRectGetMaxY(bar.frame) + 10.0;
+            if (card.bounds.size.height + 0.5 < need) {
+                CGRect f = card.frame;
+                f.size.height = need;
+                card.frame = f;
+            }
+        } else {
+            CGRect cf = [card convertRect:card.bounds toView:bar.superview];
+            CGRect f = bar.frame;
+            f.origin.x = CGRectGetMinX(cf) + inset;
+            f.origin.y = CGRectGetMaxY(cf) + 8.0;
+            f.size.width = MAX(120.0, CGRectGetWidth(cf) - inset * 2.0);
+            bar.frame = f;
         }
         return;
     }
@@ -239,8 +271,46 @@ static void KLInstallRow(UIView *card) {
     CGFloat gap = 10.0;
     CGFloat btnW = (usable - gap) / 2.0;
 
-    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(inset, baseH + 6.0, usable, btnH)];
-    container.backgroundColor = [UIColor clearColor];
+    // 放哪儿：优先加进卡片底部（视觉上属于面板），
+    // 但卡片长高后如果会顶出屏幕，就改成贴在卡片下方的兄弟视图——绝不覆盖/改动面板原有内容。
+    CGRect cardInWin = card.bounds;
+    if (win != nil) {
+        cardInWin = [card convertRect:card.bounds toView:win];
+    }
+    CGFloat safeBottom = 0.0;
+    if (@available(iOS 11.0, *)) {
+        safeBottom = win.safeAreaInsets.bottom;
+    }
+    CGFloat limitY = (win != nil ? win.bounds.size.height : CGRectGetMaxY(cardInWin)) - safeBottom - 8.0;
+    BOOL inside = (CGRectGetMaxY(cardInWin) + btnH + 14.0) <= limitY;
+
+    UIView *container = nil;
+    NSString *mode = nil;
+    if (inside) {
+        container = [[UIView alloc] initWithFrame:CGRectMake(inset, baseH + 6.0, usable, btnH)];
+        container.backgroundColor = [UIColor clearColor];
+        [card addSubview:container];
+        CGRect cf = card.frame;
+        cf.size.height = baseH + btnH + 14.0;
+        card.frame = cf;
+        mode = @"卡片内";
+    } else {
+        UIView *host = card.superview ?: win;
+        if (host == nil) {
+            return;
+        }
+        CGRect cf = [card convertRect:card.bounds toView:host];
+        container = [[UIView alloc] initWithFrame:CGRectMake(CGRectGetMinX(cf) + inset,
+                                                             CGRectGetMaxY(cf) + 8.0,
+                                                             usable,
+                                                             btnH)];
+        container.backgroundColor = [UIColor clearColor];
+        [host addSubview:container];
+        [host bringSubviewToFront:container];
+        mode = @"卡片下方（窗口空间不足，避免压住原面板）";
+    }
+    container.tag = (NSInteger)(inset * 10.0);
+    container.autoresizingMask = UIViewAutoresizingNone;
 
     UIButton *bLog = KLMakeButton(@"运行日志", ref, CGRectMake(0.0, 0.0, btnW, btnH));
     [bLog addTarget:gTarget action:@selector(onViewLog:) forControlEvents:UIControlEventTouchUpInside];
@@ -250,16 +320,128 @@ static void KLInstallRow(UIView *card) {
     [bExp addTarget:gTarget action:@selector(onExportLog:) forControlEvents:UIControlEventTouchUpInside];
     [container addSubview:bExp];
 
-    CGRect cf = card.frame;
-    cf.size.height = baseH + btnH + 14.0;
-    card.frame = cf;
-
-    [card addSubview:container];
     objc_setAssociatedObject(card, kKLRowKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    KLLogC(@"UI", @"面板已注入「运行日志 / 导出日志」 card=%@ %.0fx%.0f → 高 %.0f, ref=%@ %.0fx%.0f",
-           NSStringFromClass([card class]), width, baseH, cf.size.height,
-           ref ? NSStringFromClass([ref class]) : @"none", refRect.size.width, btnH);
+    KLLogC(@"UI", @"面板已注入「运行日志 / 导出日志」 方式=%@ card=%@ %.0fx%.0f 按钮 %.0fx%.0f ref=%@",
+           mode, NSStringFromClass([card class]), width, baseH, btnW, btnH,
+           ref ? NSStringFromClass([ref class]) : @"none");
+}
+static UIWindow *KLKeyWindow(void);
+
+void KLBootProbe(NSString *extra) {
+    UIWindow *w = KLKeyWindow();
+    UIViewController *root = w.rootViewController;
+    if (root == nil) {
+        return;
+    }
+    while (root.presentedViewController != nil) {
+        root = root.presentedViewController;
+    }
+    NSString *msg = [NSString stringWithFormat:@"bundle: %@\nversion: %@\n\n%@",
+                     [NSBundle mainBundle].bundleIdentifier ?: @"?",
+                     KLAppVersion(),
+                     extra ?: @""];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"KAlertLog 已加载"
+                                                                message:msg
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    [root presentViewController:ac animated:YES completion:nil];
+    // 8 秒后自动收掉，避免挡住用户操作
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [ac dismissViewControllerAnimated:YES completion:nil];
+    });
+}
+
+static UIButton *gFab = nil;
+static const void *kKLFabPanKey = &kKLFabPanKey;
+
+static UIWindow *KLKeyWindow(void) {
+    UIApplication *app = [UIApplication sharedApplication];
+    UIWindow *fallback = nil;
+    for (UIScene *scene in app.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        UIWindowScene *ws = (UIWindowScene *)scene;
+        for (UIWindow *w in ws.windows) {
+            if (w.isKeyWindow) {
+                return w;
+            }
+            if (fallback == nil && w.rootViewController != nil) {
+                fallback = w;
+            }
+        }
+    }
+    return fallback;
+}
+
+static void KLFabPan(UIPanGestureRecognizer *g) {
+    UIView *v = g.view;
+    UIWindow *w = v.window;
+    if (v == nil || w == nil) {
+        return;
+    }
+    CGPoint t = [g translationInView:w];
+    CGPoint c = CGPointMake(v.center.x + t.x, v.center.y + t.y);
+    CGFloat halfW = v.bounds.size.width / 2.0;
+    CGFloat halfH = v.bounds.size.height / 2.0;
+    CGFloat topInset = 0.0;
+    CGFloat botInset = 0.0;
+    if (@available(iOS 11.0, *)) {
+        topInset = w.safeAreaInsets.top;
+        botInset = w.safeAreaInsets.bottom;
+    }
+    c.x = MAX(halfW + 6.0, MIN(w.bounds.size.width - halfW - 6.0, c.x));
+    c.y = MAX(halfH + topInset + 6.0, MIN(w.bounds.size.height - halfH - botInset - 6.0, c.y));
+    v.center = c;
+    [g setTranslation:CGPointZero inView:w];
+
+    if (g.state == UIGestureRecognizerStateEnded) {
+        [[NSUserDefaults standardUserDefaults] setDouble:c.x forKey:@"KAlertLog.fabX"];
+        [[NSUserDefaults standardUserDefaults] setDouble:c.y forKey:@"KAlertLog.fabY"];
+    }
+}
+
+static void KLInstallFallbackFab(void) {
+    if (gFab != nil && gFab.window != nil) {
+        [gFab.superview bringSubviewToFront:gFab];
+        return;
+    }
+    UIWindow *w = KLKeyWindow();
+    if (w == nil) {
+        return;
+    }
+    if (gTarget == nil) {
+        gTarget = [[KLActionTarget alloc] init];
+    }
+    CGFloat side = 46.0;
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    CGFloat x = [d objectForKey:@"KAlertLog.fabX"] ? [d doubleForKey:@"KAlertLog.fabX"] : 34.0;
+    CGFloat y = [d objectForKey:@"KAlertLog.fabY"] ? [d doubleForKey:@"KAlertLog.fabY"]
+                                                   : (w.bounds.size.height - 120.0);
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    b.frame = CGRectMake(0, 0, side, side);
+    b.center = CGPointMake(x, y);
+    [b setTitle:@"日志" forState:UIControlStateNormal];
+    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    b.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
+    b.layer.cornerRadius = side / 2.0;
+    b.clipsToBounds = YES;
+    b.layer.borderWidth = 1.0;
+    b.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor;
+    [b addTarget:gTarget action:@selector(onFabTap:) forControlEvents:UIControlEventTouchUpInside];
+
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:gTarget
+                                                                        action:@selector(onFabPan:)];
+    [b addGestureRecognizer:pan];
+    objc_setAssociatedObject(b, kKLFabPanKey, pan, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    [w addSubview:b];
+    [w bringSubviewToFront:b];
+    gFab = b;
+    KLLogC(@"UI", @"未找到 KAlert 面板，已改用悬浮球入口（可拖动）");
 }
 
 void KLEnsurePanelButtons(void) {
@@ -276,10 +458,13 @@ void KLEnsurePanelButtons(void) {
     UIView *card = KLFindPanelCard();
     gCardRef = card;
     if (card == nil) {
-        if (gAttempts > 12 && !gReportedMissing) {
-            gReportedMissing = YES;
-            KLLogC(@"ERR", @"启动 %ld 秒仍未找到 KAlert 面板，按钮未注入（锚点文案不匹配？）",
-                   (long)gAttempts);
+        if (gAttempts > 12) {
+            if (!gReportedMissing) {
+                gReportedMissing = YES;
+                KLLogC(@"ERR", @"启动 %ld 次仍未找到 KAlert 面板，按钮未注入（锚点文案不匹配？）",
+                       (long)gAttempts);
+            }
+            KLInstallFallbackFab();
         }
         return;
     }
