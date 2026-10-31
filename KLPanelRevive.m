@@ -1,5 +1,6 @@
 #import "KAlertLog.h"
 #import <mach-o/dyld.h>
+#import <objc/runtime.h>
 #import <dlfcn.h>
 #import <string.h>
 #import <math.h>
