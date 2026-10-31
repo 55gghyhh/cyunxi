@@ -1,12 +1,19 @@
+# 注意：macos-14 runner 镜像已于 2026-11-01 退役，跑不起来（会直接 取消/失败）。
+# 若 macos-15 将来也退役，把 runs-on 换成当时最新可用的镜像即可。
 name: Build KAlertLog
 
 on:
   push:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
