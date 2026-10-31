@@ -69,11 +69,6 @@ __attribute__((constructor)) static void KAlertLogInit(void) {
                            dispatch_get_main_queue(), ^{
                 KLRevivePanel();
             });
-            // 探针：1.2s 后弹框（等 App 自己的首屏铺完，避免被它的启动画面盖住）
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                KLBootProbe(@"rpath 解析成功 → 加载链路通");
-            });
         });
     }
 }

@@ -21,10 +21,13 @@
 
 static const uintptr_t kKLBuildFabOffset  = 0xF408;
 static const uintptr_t kKLToggleFabOffset = 0xD508;
-// 0x10124 = 构造函数里那段 hook 安装代码。dyld 加载时它已经跑过一次，
-// 但那时 Swift 类还没在 ObjC runtime 里 realized，objc_getClass 全返回 nil。
-// UI 起来之后再调一次，类名就能命中。
-static const uintptr_t kKLHookInstallOffset = 0x10124;
+// 0x10124 = 构造函数里那段 hook 安装代码。**不要调用它**：
+// 它 hook 的是 NSDateFormatter / CLLocationManager / UIImageView 等系统类，
+// 在 Pro 上重装会让 system 类换成 ioskuka 的实现，而那个实现与 Pro 不兼容，
+// 一执行就走到 brk → SIGILL（实测 .ips：ioskuka+0xF0D8，栈顶是 KLNowStamp）。
+// 更糟的是 KAlertLog 自己的日志时间戳也走 NSDateFormatter，等于自杀。
+// 结论：这个包的 ioskuka hook 只能保持"装不上"的状态，硬装必崩。
+__attribute__((unused)) static const uintptr_t kKLHookInstallOffset = 0x10124;   // 仅作记录，不再调用
 static const CGFloat   kKLMinOverlayLevel = 50.0;
 
 static uintptr_t KLIoskukaBase(void) {
@@ -177,14 +180,10 @@ void KLRevivePanel(void) {
         KLLogC(@"REV", @"没找到 ioskuka 镜像，跳过面板复活");
         return;
     }
-    KLLogC(@"REV", @"ioskuka base=0x%lx  装hook=0x%lx  建球=0x%lx  建面板=0x%lx",
+    KLLogC(@"REV", @"ioskuka base=0x%lx  建球=0x%lx  建面板=0x%lx（不重装 hook）",
            (unsigned long)base,
-           (unsigned long)(base + kKLHookInstallOffset),
            (unsigned long)(base + kKLBuildFabOffset),
            (unsigned long)(base + kKLToggleFabOffset));
-
-    // 先重装 hook（此时 Swift 类已 realized），再建 UI
-    KLCallVoid(base + kKLHookInstallOffset, @"0x10124 重装 hook");
 
     KLCallVoid(base + kKLBuildFabOffset, @"0xF408 建球");
     KLCallVoid(base + kKLToggleFabOffset, @"0xD508 建面板");

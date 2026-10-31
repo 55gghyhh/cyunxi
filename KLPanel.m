@@ -348,7 +348,7 @@ static void KLInstallRow(UIView *card) {
 
 static UIWindow *KLKeyWindow(void);
 
-void KLBootProbe(NSString *extra) {
+__attribute__((unused)) void KLBootProbe(NSString *extra) {
     UIWindow *w = KLKeyWindow();
     UIViewController *root = w.rootViewController;
     if (root == nil) {
