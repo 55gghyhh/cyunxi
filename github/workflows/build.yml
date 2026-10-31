@@ -1,0 +1,44 @@
+name: Build KAlertLog
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Theos
+        run: |
+          set -e
+          export THEOS=$HOME/theos
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          mkdir -p "$THEOS/sdks"
+          curl -fsSL https://github.com/theos/sdks/archive/master.tar.gz -o /tmp/sdks.tar.gz
+          tar -xzf /tmp/sdks.tar.gz -C /tmp
+          cp -R /tmp/sdks-master/*.sdk "$THEOS/sdks/" || true
+          ls "$THEOS/sdks"
+
+      - name: Build package
+        run: |
+          set -e
+          export PATH="$THEOS/bin:$PATH"
+          make clean || true
+          make package FINALPACKAGE=1 DEBUG=0
+
+      - name: Collect dylib
+        run: |
+          mkdir -p out
+          find . -name "KAlertLog.dylib" -exec cp {} out/ \;
+          find . -name "*.deb" -exec cp {} out/ \;
+          ls -l out
+          shasum -a 256 out/* > out/SHA256SUMS.txt
+          cat out/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KAlertLog
+          path: out/*
