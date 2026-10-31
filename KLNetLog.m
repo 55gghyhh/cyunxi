@@ -48,11 +48,27 @@ static IMP KLOrig(id self, SEL sel) {
     return found;
 }
 
+static Method KLOwnMethod(Class cls, SEL sel) {
+    unsigned int count = 0;
+    Method *list = class_copyMethodList(cls, &count);
+    Method hit = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(list[i]) == sel) {
+            hit = list[i];
+            break;
+        }
+    }
+    if (list != NULL) {
+        free(list);
+    }
+    return hit;
+}
+
 static BOOL KLSwizzle(Class cls, SEL sel, IMP newImp) {
     if (cls == Nil) {
         return NO;
     }
-    Method m = class_getInstanceMethod(cls, sel);
+    Method m = KLOwnMethod(cls, sel);
     if (m == NULL) {
         return NO;
     }
@@ -336,16 +352,18 @@ void KLNetInstall(void) {
     gInstalled = YES;
     KLInstallOnClass([NSURLSession class]);
 
-    Class concrete = Nil;
-    @try {
-        concrete = object_getClass([NSURLSession sharedSession]);
-    } @catch (NSException *e) {
-        (void)e;
-        concrete = Nil;
+    NSArray<NSString *> *names = @[@"__NSCFURLSession", @"NSURLSession", @"_NSURLSession"];
+    NSMutableArray<NSString *> *done = [NSMutableArray array];
+    for (NSString *n in names) {
+        Class c = NSClassFromString(n);
+        if (c == Nil || c == [NSURLSession class]) {
+            continue;
+        }
+        KLInstallOnClass(c);
+        [done addObject:n];
     }
-    if (concrete != Nil && concrete != [NSURLSession class]) {
-        KLInstallOnClass(concrete);
-        KLLogC(@"NET", @"网络钩子已安装（NSURLSession + %@）", NSStringFromClass(concrete));
+    if (done.count) {
+        KLLogC(@"NET", @"网络钩子已安装（NSURLSession + %@）", [done componentsJoinedByString:@", "]);
     } else {
         KLLogC(@"NET", @"网络钩子已安装（NSURLSession）");
     }
