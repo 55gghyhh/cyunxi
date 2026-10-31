@@ -22,6 +22,8 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
+#import <CoreVideo/CoreVideo.h>
 #import "KXLog.h"
 
 #pragma mark - 配置
@@ -221,7 +223,7 @@ static void h_captureOut(id self, SEL _cmd, id output, CMSampleBufferRef sbuf, i
         CVImageBufferRef pb = CMSampleBufferGetImageBuffer(sbuf);
         if (pb) KXDrawInto((CVPixelBufferRef)pb, gSwapImage);
     }
-    if (o_captureOut) ((void(*)(id,SEL,id,id,id))o_captureOut)(self, _cmd, output, sbuf, conn);
+    if (o_captureOut) ((void(*)(id,SEL,id,void*,id))o_captureOut)(self, _cmd, output, (void *)sbuf, conn);
 }
 
 static void (*o_setSampleDelegate)(id, SEL, id, id);
