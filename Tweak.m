@@ -40,6 +40,7 @@ static void KLRegisterLifecycle(void) {
     }];
 }
 
+
 __attribute__((constructor)) static void KAlertLogInit(void) {
     @autoreleasepool {
         KLInstallStderrCapture();
