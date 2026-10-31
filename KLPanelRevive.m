@@ -4,18 +4,23 @@
 #import <string.h>
 #import <math.h>
 
-// 这个包（XCameraPro 3.0.185 / ioskuka 5.1.0 dae300ef）里有一串"死代码"：
-// __init_offsets 三个构造函数都不调用 0xF408，全 __text 也没有外部引用，
-// 所以浮层窗口 / 酷卡球 / 设置面板从来没被创建过 —— "一直都没有面板"的根因。
+// XCameraPro 3.0.185 / ioskuka 5.1.0(dae300ef) 里的"死代码"：
+//   __init_offsets 三个构造函数都不调 0xF408，全 __text 也没有外部引用，
+//   所以浮层窗口 / 酷卡球 / 设置面板从来没被创建过。
+// 而且 0xF408 自身有两道早期 return（0xF448 cbz w0, 0xF454 tbnz w8,#0），
+// 校验不过就直接跳尾部返回 —— 这就是"调用成功但什么都没建"的原因。
+// 用 P7 补丁把这两条 nop 掉之后，0xF408 才会真正建窗口、建球。
 //
-// 两个关键函数（实测都是纯函数，不读 x0/x1，也不依赖 self）：
-//   0xF408  建浮层窗口 + 酷卡球（球指针写进全局 0x7F140）
-//   0xD508  onFab：把球显隐取反；球变隐藏后继续走 0xD568 建面板卡片
+//   0xF408  建浮层窗口(level 100) + 酷卡球（球指针写进全局 0x7F140）
+//   0xD508  onFab：球显隐取反；球变隐藏后继续走 0xD568 建面板卡片
 //
-// 所以 App 起来后依次调这两个地址，球和面板都会出来，不需要用户去点球。
+// 关键安全约束：ioskuka 的窗口 windowLevel = 100，App 自己的是 0。
+// 所有"找球/修球"只允许作用于 windowLevel >= 50 的窗口，
+// 绝不再碰 App 的任何视图（上一版按 46~90pt 方形乱扫，误改过水印/工具栏控件）。
 
 static const uintptr_t kKLBuildFabOffset  = 0xF408;
 static const uintptr_t kKLToggleFabOffset = 0xD508;
+static const CGFloat   kKLMinOverlayLevel = 50.0;
 
 static uintptr_t KLIoskukaBase(void) {
     uint32_t n = _dyld_image_count();
@@ -45,18 +50,17 @@ static void KLCallVoid(uintptr_t addr, NSString *what) {
     }
 }
 
-// 打印一个视图往上到 window 的完整链
 static void KLDumpChain(UIView *v, NSString *tag) {
     NSMutableString *s = [NSMutableString string];
     UIView *cur = v;
     int depth = 0;
-    while (cur != nil && depth < 8) {
-        [s appendFormat:@"%@<%@ (%.0f,%.0f,%.0f,%.0f) hid=%d a=%.2f> ",
+    while (cur != nil && depth < 6) {
+        [s appendFormat:@"%@<%@ (%.0f,%.0f,%.0f,%.0f) hid=%d> ",
          depth == 0 ? @"" : @"^",
          NSStringFromClass([cur class]),
          cur.frame.origin.x, cur.frame.origin.y,
          cur.frame.size.width, cur.frame.size.height,
-         cur.isHidden ? 1 : 0, cur.alpha];
+         cur.isHidden ? 1 : 0];
         cur = cur.superview;
         depth += 1;
     }
@@ -68,53 +72,29 @@ static BOOL KLLooksLikeFab(UIView *v) {
     return (s.width >= 46.0 && s.width <= 90.0 && fabs(s.width - s.height) < 3.0);
 }
 
-static int KLScanForFab(UIView *v, int depth) {
+static int KLScanFabIn(UIView *v, int depth) {
     int found = 0;
-    if (depth > 12 || v == nil) {
+    if (v == nil || depth > 10) {
         return 0;
     }
     if (KLLooksLikeFab(v)) {
-        KLLogC(@"REV", @"候选球 %@ %.0fx%.0f origin=(%.0f,%.0f) hid=%d alpha=%.2f win=%@",
+        KLLogC(@"REV", @"  osk球 %@ %.0fx%.0f origin=(%.0f,%.0f) hid=%d a=%.2f",
                NSStringFromClass([v class]),
                v.bounds.size.width, v.bounds.size.height,
                v.frame.origin.x, v.frame.origin.y,
-               v.isHidden ? 1 : 0, v.alpha,
-               v.window ? NSStringFromClass([v.window class]) : @"(无窗口)");
-        KLDumpChain(v, @"  ");
+               v.isHidden ? 1 : 0, v.alpha);
+        KLDumpChain(v, @"    ");
         found += 1;
     }
     for (UIView *sub in v.subviews) {
-        found += KLScanForFab(sub, depth + 1);
+        found += KLScanFabIn(sub, depth + 1);
     }
     return found;
 }
 
-static void KLDumpWindows(NSString *tag) {
-    UIApplication *app = [UIApplication sharedApplication];
-    int wi = 0;
-    for (UIScene *scene in app.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) {
-            continue;
-        }
-        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-            KLLogC(@"REV", @"%@ win#%d %@ (%.0f,%.0f,%.0f,%.0f) hid=%d a=%.2f lv=%.0f root=%@ subs=%lu",
-                   tag, wi, NSStringFromClass([w class]),
-                   w.frame.origin.x, w.frame.origin.y,
-                   w.frame.size.width, w.frame.size.height,
-                   w.isHidden ? 1 : 0, w.alpha, w.windowLevel,
-                   w.rootViewController ? NSStringFromClass([w.rootViewController class]) : @"(无)",
-                   (unsigned long)w.subviews.count);
-            KLScanForFab(w, 0);
-            wi += 1;
-        }
-    }
-    KLLogC(@"REV", @"%@ 共 %d 个窗口", tag, wi);
-}
-
-// 兜底：球强制可见、alpha 拉满、挪进屏幕
-static BOOL KLForceShowFab(UIView *v, CGRect screen, int depth) {
+static BOOL KLFixFabIn(UIView *v, CGRect winBounds, int depth) {
     BOOL touched = NO;
-    if (v == nil || depth > 12) {
+    if (v == nil || depth > 10) {
         return NO;
     }
     if (KLLooksLikeFab(v)) {
@@ -128,17 +108,48 @@ static BOOL KLForceShowFab(UIView *v, CGRect screen, int depth) {
         }
         CGPoint c = v.center;
         if (c.x < 20.0 || c.y < 20.0 ||
-            c.x > screen.size.width - 10.0 || c.y > screen.size.height - 10.0) {
-            v.center = CGPointMake(screen.size.width - 44.0, screen.size.height - 160.0);
+            c.x > winBounds.size.width - 10.0 || c.y > winBounds.size.height - 10.0) {
+            v.center = CGPointMake(winBounds.size.width - 44.0, winBounds.size.height - 160.0);
             touched = YES;
         }
     }
     for (UIView *sub in v.subviews) {
-        if (KLForceShowFab(sub, screen, depth + 1)) {
+        if (KLFixFabIn(sub, winBounds, depth + 1)) {
             touched = YES;
         }
     }
     return touched;
+}
+
+// 只处理 ioskuka 的浮层窗口
+static void KLDumpAndFixOverlays(NSString *tag) {
+    UIApplication *app = [UIApplication sharedApplication];
+    int total = 0, overlays = 0, fabs_ = 0, fixed = 0;
+    for (UIScene *scene in app.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            total += 1;
+            BOOL isOverlay = (w.windowLevel >= kKLMinOverlayLevel);
+            KLLogC(@"REV", @"%@ win %@ lv=%.0f (%.0f,%.0f,%.0f,%.0f) hid=%d%@",
+                   tag, NSStringFromClass([w class]), w.windowLevel,
+                   w.frame.origin.x, w.frame.origin.y,
+                   w.frame.size.width, w.frame.size.height,
+                   w.isHidden ? 1 : 0,
+                   isOverlay ? @" [ioskuka浮层]" : @" [App]");
+            if (!isOverlay) {
+                continue;   // ← 绝不碰 App 自己的窗口
+            }
+            overlays += 1;
+            fabs_ += KLScanFabIn(w, 0);
+            if (KLFixFabIn(w, w.bounds, 0)) {
+                fixed += 1;
+            }
+        }
+    }
+    KLLogC(@"REV", @"%@ 窗口 %d 个，其中浮层 %d 个，找到球 %d 个，修正 %d 个",
+           tag, total, overlays, fabs_, fixed);
 }
 
 void KLRevivePanel(void) {
@@ -153,27 +164,11 @@ void KLRevivePanel(void) {
            (unsigned long)(base + kKLToggleFabOffset));
 
     KLCallVoid(base + kKLBuildFabOffset, @"0xF408 建球");
-    // 紧接着走 onFab：球显隐取反 -> 变隐藏 -> 0xD568 建面板。
-    // onFab 只用全局 0x7F140，不读 self/sel，可以直接按地址调。
     KLCallVoid(base + kKLToggleFabOffset, @"0xD508 建面板");
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        KLDumpWindows(@"T+0.8s");
+        KLDumpAndFixOverlays(@"T+0.8s");
         KLEnsurePanelButtons();
-
-        UIApplication *app = [UIApplication sharedApplication];
-        int fixed = 0;
-        for (UIScene *scene in app.connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) {
-                continue;
-            }
-            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                if (KLForceShowFab(w, w.bounds, 0)) {
-                    fixed += 1;
-                }
-            }
-        }
-        KLLogC(@"REV", @"兜底显示球：%d 个窗口有改动", fixed);
     });
 }
