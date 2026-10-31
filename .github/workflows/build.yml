@@ -22,23 +22,59 @@ jobs:
           cp -R /tmp/sdks-master/*.sdk "$THEOS/sdks/" || true
           ls "$THEOS/sdks"
 
+      # Theos 在 macOS 上不自带 ldid，签名阶段会直接 "ldid: command not found"。
+      - name: Install toolchain deps (ldid / dpkg / xz)
+        run: |
+          set +e
+          brew install ldid xz dpkg
+          if ! command -v ldid >/dev/null 2>&1; then
+            echo "brew 安装 ldid 失败，回落到 Procursus 预编译包"
+            for asset in ldid_macosx_universal ldid_macosx_arm64 ldid_macosx_x86_64; do
+              url="https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/$asset"
+              if curl -fsSL "$url" -o /tmp/ldid; then
+                chmod +x /tmp/ldid
+                sudo mv /tmp/ldid /usr/local/bin/ldid
+                break
+              fi
+            done
+          fi
+          set -e
+          echo "--- 工具链自检"
+          command -v ldid dpkg-deb xz || true
+          ldid -v || ldid -V || true
+          mkdir -p "$THEOS/bin"
+          ln -sf "$(command -v ldid)" "$THEOS/bin/ldid" || true
+          test -x "$(command -v ldid)"
+
       - name: Build package
         run: |
           set -e
           export PATH="$THEOS/bin:$PATH"
           make clean || true
-          make package FINALPACKAGE=1 DEBUG=0
+          make -j4 FINALPACKAGE=1 DEBUG=0
+          echo "--- 产物"
+          find .theos -name "*.dylib" -type f -print
 
       - name: Collect dylib
         run: |
+          set -e
           mkdir -p out
-          find . -name "KAlertLog.dylib" -exec cp {} out/ \;
-          find . -name "*.deb" -exec cp {} out/ \;
-          ls -l out
-          shasum -a 256 out/* > out/SHA256SUMS.txt
-          cat out/SHA256SUMS.txt
+          DYLIB=$(find .theos -name "*.dylib" -type f -not -name "*.unsigned" | head -n 1)
+          if [ -z "$DYLIB" ]; then
+            echo "::error::没找到编译产物 dylib，检查 make 是否真的成功"
+            exit 1
+          fi
+          echo "dylib=$DYLIB"
+          NAME=$(basename "$DYLIB" .dylib)
+          cp "$DYLIB" "out/${NAME}-fat.dylib"
+          lipo -info "out/${NAME}-fat.dylib"
+          lipo -thin arm64e "out/${NAME}-fat.dylib" -output "out/${NAME}-arm64e.dylib" || true
+          lipo -thin arm64  "out/${NAME}-fat.dylib" -output "out/${NAME}-arm64.dylib"  || true
+          for f in out/*.dylib; do echo "== $f"; lipo -info "$f"; done
+          cd out && shasum -a 256 * > SHA256SUMS.txt && cat SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: KAlertLog
           path: out/*
+          if-no-files-found: error
