@@ -16,7 +16,6 @@ static void KLStartPanelWatcher(void) {
     [[NSRunLoop mainRunLoop] addTimer:gWatcher forMode:NSRunLoopCommonModes];
 }
 
-
 static void KLRegisterLifecycle(void) {
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserverForName:UIApplicationDidBecomeActiveNotification
