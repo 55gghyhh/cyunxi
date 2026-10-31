@@ -273,6 +273,7 @@ static void KLInstallRow(UIView *card) {
     CGFloat width = card.bounds.size.width;
     CGFloat baseH = card.bounds.size.height;
     if (width < 80.0 || baseH < 60.0) {
+        KLLogC(@"UI", @"跳过卡片：尺寸太小 %.0fx%.0f", width, baseH);
         return;
     }
 
@@ -286,6 +287,9 @@ static void KLInstallRow(UIView *card) {
             refRect = ref.frame;
         }
         inset = MAX(refRect.origin.x, 10.0);
+        // convertRect 在深层/带变换的层级里可能算出极大值，必须夹紧，
+        // 否则 usable 变负 → 静默 return（上一版 370x470 的真面板就是这么被跳过的）
+        inset = MIN(inset, width * 0.15);
         btnH = refRect.size.height;
     }
     if (btnH < 22.0 || btnH > 80.0) {
@@ -293,6 +297,8 @@ static void KLInstallRow(UIView *card) {
     }
     CGFloat usable = width - inset * 2.0;
     if (usable < 100.0) {
+        KLLogC(@"ERR", @"跳过卡片：usable 太小 %.0f (width=%.0f inset=%.0f ref=%@)",
+               usable, width, inset, ref ? NSStringFromClass([ref class]) : @"nil");
         return;
     }
     CGFloat gap = 10.0;
@@ -389,7 +395,24 @@ void KLBootProbe(NSString *extra) {
 static UIButton *gFab = nil;
 static const void *kKLFabPanKey = &kKLFabPanKey;
 
-// 浮层窗口 = ioskuka 的 XCPassWindow（windowLevel 2100）
+// 只认 ioskuka 自己的浮层窗口：类名 XCPassWindow 或 windowLevel == 2100。
+// 键盘窗口（UIInputSetHostView / UITextEffectsWindow）level 也很高，
+// 上一版按 level>=50 过滤时把按钮注入到了键盘里（y=1220，屏幕外）。
+static BOOL KLIsIoskukaWindow(UIWindow *w) {
+    if (w == nil) {
+        return NO;
+    }
+    NSString *cn = NSStringFromClass([w class]);
+    if ([cn containsString:@"XCPassWindow"]) {
+        return YES;
+    }
+    if ([cn containsString:@"Input"] || [cn containsString:@"TextEffects"] ||
+        [cn containsString:@"Keyboard"] || [cn containsString:@"StatusBar"]) {
+        return NO;
+    }
+    return (fabs(w.windowLevel - 2100.0) < 1.0);
+}
+
 static NSArray<UIWindow *> *KLOverylayWindows(void) {
     NSMutableArray *out = [NSMutableArray array];
     UIApplication *app = [UIApplication sharedApplication];
@@ -398,7 +421,7 @@ static NSArray<UIWindow *> *KLOverylayWindows(void) {
             continue;
         }
         for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-            if (w.windowLevel >= 50.0) {
+            if (KLIsIoskukaWindow(w)) {
                 [out addObject:w];
             }
         }
@@ -513,15 +536,23 @@ static void KLInstallFallbackFab(void) {
 
 // 保活：ioskuka 关闭面板时会把整个浮层窗口 hid=1，球也跟着不见。
 // 每 0.5s 检查一次，被隐藏就恢复 —— 关闭面板后窗口里只剩球，正是想要的状态。
+static BOOL gOverlayWasHidden = NO;
+
 static void KLKeepOverlayAlive(void) {
-    for (UIWindow *w in KLOverylayWindows()) {
+    NSArray<UIWindow *> *wins = KLOverylayWindows();
+    BOOL anyHidden = NO;
+    for (UIWindow *w in wins) {
         if (w.isHidden) {
             [w setHidden:NO];
-            KLLogC(@"UI", @"浮层窗口被隐藏，已恢复（球应重新可见）");
+            anyHidden = YES;
         }
         if (w.alpha < 0.99) {
             w.alpha = 1.0;
         }
+    }
+    if (anyHidden != gOverlayWasHidden) {
+        gOverlayWasHidden = anyHidden;
+        KLLogC(@"UI", @"浮层窗口%s", anyHidden ? "隐藏→已恢复" : "已隐藏（面板关闭，球保持可见）");
     }
 }
 
