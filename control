@@ -1,9 +1,0 @@
-Package: com.ioskuka.kalertlog
-Name: KAlertLog
-Version: 1.0.0
-Architecture: iphoneos-arm64
-Description: 给 ioskuka 面板加「运行日志 / 导出日志」两个按钮（TrollFools 注入用，可独立于主 tweak 加载）
-Maintainer: ioskuka
-Author: ioskuka
-Section: Tweaks
-Depends: firmware (>= 14.0)
